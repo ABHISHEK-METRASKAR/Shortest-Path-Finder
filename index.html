@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Shortest Path Finder (Waypoints & Alternatives)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body, html { margin:0; padding:0; height:100%; font-family: Arial, sans-serif; }
+    #map { height:80%; width:100%; }
+    #controls {
+      height:20%; padding:10px; background:#f8fafc; box-shadow:0 2px 6px rgba(0,0,0,0.1);
+      display:flex; flex-direction:column; gap:8px; overflow-y:auto;
+    }
+    .input-row { display:flex; gap:10px; flex-wrap: wrap; }
+    input {
+      padding:8px; border:1px solid #ccc; border-radius:6px; width:250px;
+    }
+    button {
+      padding:8px 14px; border:none; border-radius:6px; background:#0ea5a3; color:white;
+      cursor:pointer; font-weight:bold;
+    }
+    button:hover { background:#0c948f; }
+    #info { margin-top:5px; font-size:14px; color:#1e293b; }
+    #legend { margin-top:5px; font-size:13px; }
+    .color-box { display:inline-block; width:12px; height:12px; margin-right:5px; vertical-align:middle; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div class="input-row">
+      <input type="text" id="from" placeholder="From (city, address, or lat,lng)">
+      <input type="text" id="to" placeholder="To (city, address, or lat,lng)">
+      <button onclick="addStop()">+ Add Stop</button>
+      <button onclick="findRoute()">Find Route</button>
+    </div>
+    <div id="stops"></div>
+    <div id="info"></div>
+    <div id="legend"></div>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([20.5937, 78.9629], 5); // India center
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let routes = [];
+    let markers = [];
+    let stopCount = 0;
+    const colors = ['blue','green','orange']; // for alternative routes
+
+    function addStop() {
+      stopCount++;
+      const div = document.createElement("div");
+      div.className = "input-row";
+      div.innerHTML = `<input type="text" class="stop" placeholder="Stop ${stopCount} (city or lat,lng)">`;
+      document.getElementById("stops").appendChild(div);
+    }
+
+    async function geocode(query) {
+      if (query.includes(",")) {
+        let [lat, lng] = query.split(",").map(s => parseFloat(s.trim()));
+        return { lat, lng };
+      }
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.length === 0) throw new Error("Location not found: " + query);
+      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    }
+
+    async function findRoute() {
+      const infoDiv = document.getElementById("info");
+      const legendDiv = document.getElementById("legend");
+      infoDiv.innerHTML = "Finding route...";
+      legendDiv.innerHTML = "";
+
+      // Remove old routes & markers
+      routes.forEach(r => map.removeLayer(r));
+      routes = [];
+      markers.forEach(m => map.removeLayer(m));
+      markers = [];
+
+      try {
+        const start = await geocode(document.getElementById("from").value);
+        const end = await geocode(document.getElementById("to").value);
+
+        // Collect stops
+        const stopInputs = document.querySelectorAll(".stop");
+        let coords = [start];
+        for (let s of stopInputs) {
+          if (s.value.trim() !== "") {
+            coords.push(await geocode(s.value.trim()));
+          }
+        }
+        coords.push(end);
+
+        // Add markers
+        coords.forEach((c, i) => {
+          let label = i===0 ? "From" : (i===coords.length-1 ? "To" : "Stop "+i);
+          markers.push(L.marker([c.lat, c.lng]).addTo(map).bindPopup(label));
+        });
+
+        // Build OSRM URL
+        let coordStr = coords.map(c => `${c.lng},${c.lat}`).join(";");
+        const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&alternatives=true`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.code !== "Ok") throw new Error("No route found!");
+
+        // Draw each alternative
+        data.routes.forEach((r, idx) => {
+          const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+          let line = L.polyline(coords, { color: colors[idx%colors.length], weight: 5, opacity:0.7 }).addTo(map);
+          routes.push(line);
+
+          const dist = (r.distance/1000).toFixed(2);
+          const time = (r.duration/60).toFixed(1);
+
+          legendDiv.innerHTML += `<div><span class="color-box" style="background:${colors[idx%colors.length]}"></span>
+            Route ${idx+1}: ${dist} km, ${time} min</div>`;
+        });
+
+        map.fitBounds(routes[0].getBounds());
+        infoDiv.innerHTML = "✅ Routes found. Select from legend below.";
+      } catch (err) {
+        infoDiv.innerHTML = `<span style="color:red">Error: ${err.message}</span>`;
+      }
+    }
+  </script>
+</body>
+</html>
